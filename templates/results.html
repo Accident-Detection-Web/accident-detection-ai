@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <title>Video Analysis Results</title>
+</head>
+<body>
+  <h1>Video Analysis Results</h1>
+  {% for result in results %}
+    <p>{{ result }}</p>
+  {% endfor %}
+  <a href="{{ url_for('upload_video') }}">Upload another video</a>
+</body>
+</html>

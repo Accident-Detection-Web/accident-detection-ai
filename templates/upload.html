@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <title>Upload Video</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; }
+    input[type=file], input[type=submit] { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Upload a New Video</h1>
+  <form method="post" enctype="multipart/form-data" onsubmit="return checkFile();">
+    <input type="file" name="file" id="file">
+    <input type="submit" value="Upload">
+  </form>
+  <script>
+    function checkFile() {
+      var file = document.getElementById('file').files[0];
+      if (file) {
+        var fileName = file.name.toLowerCase();
+        if (!(fileName.endsWith('.mov') || fileName.endsWith('.mp4') || fileName.endsWith('.avi'))) {
+          alert('Please upload a file in .mov, .mp4, or .avi format.');
+          return false;
+        }
+        return true;
+      }
+      alert('Please select a file to upload.');
+      return false;
+    }
+  </script>
+</body>
+</html>
