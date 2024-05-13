@@ -1,13 +1,17 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Video Analysis Results</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analysis Results</title>
 </head>
 <body>
-  <h1>Video Analysis Results</h1>
-  {% for result in results %}
-    <p>{{ result }}</p>
-  {% endfor %}
-  <a href="{{ url_for('upload_video') }}">Upload another video</a>
+    <h1>Video Analysis Results</h1>
+    <ul>
+        {% for result in results %}
+        <li>{{ result }}</li>
+        {% endfor %}
+    </ul>
+    <a href="/">Go back</a>
 </body>
 </html>

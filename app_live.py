@@ -5,13 +5,10 @@ import torch
 import torchvision.transforms as transforms
 from torchvision.models import densenet121
 import torch.nn as nn
-import logging
 import time
 
 app_live = Flask(__name__)
 app_live.config['SECRET_KEY'] = os.urandom(24).hex()
-
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 @app_live.route('/api/v1/public/upload-link', methods=['POST'])
 def upload_link():
@@ -35,7 +32,6 @@ def show_results():
         results = request.args.get('results').split(',')
         return render_template('results.html', results=results)
     except Exception as e:
-        logging.error(f"Error displaying results: {e}")
         flash('Error displaying results')
         return redirect(url_for('upload_link'))
 
@@ -52,7 +48,6 @@ def load_model():
 def process_video(video_link, model, device):
     cap = cv2.VideoCapture(video_link)
     if not cap.isOpened():
-        logging.error("Failed to open video stream")
         return ['Failed to open video stream']
 
     start_time = time.time()  # 처리 시작 시간
