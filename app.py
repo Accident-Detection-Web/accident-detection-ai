@@ -120,13 +120,15 @@ def process_video(source, model, device, gps_info):
             break
         
         if frame_count % frame_skip == 0:
-            start_time = time.time()  # 프레임 처리 시작 시간
+            #start_time = time.time()  # 프레임 처리 시작 시간
             input_tensor = transform(frame).unsqueeze(0).to(device)
             with torch.no_grad():
                 output = model(input_tensor)
                 _, predicted = torch.max(output, 1)
-                accident = 'No Accident' if predicted.item() == 1 else 'Accident'
-                if accident == 'Accident':
+                #accident = 'No Accident' if predicted.item() == 1 else 'Accident'.
+                accident = 0 if predicted.item() == 1 else 1.
+                #if accident == 'Accident':
+                if accident == 1:
                     accident_count += 1
                     if(accident_count == 5):
                         #이미지 저장
@@ -147,8 +149,8 @@ def process_video(source, model, device, gps_info):
                 else:
                     frame_skip = 5  # 사고가 없으면 5 프레임 후 검사
 
-            end_time = time.time()  # 프레임 처리 종료 시간
-            frame_times.append(end_time - start_time)  # 처리 시간을 목록에 추가
+            #end_time = time.time()  # 프레임 처리 종료 시간
+            #frame_times.append(end_time - start_time)  # 처리 시간을 목록에 추가
         
         frame_count += 1
 
