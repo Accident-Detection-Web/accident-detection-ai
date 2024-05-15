@@ -18,6 +18,9 @@ import ffmpeg
 import re
 import mysql.connector
 from mysql.connector import Error
+import requests
+import json
+from datetime import datetime
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24).hex()
@@ -127,6 +130,19 @@ def insert_accident_data(accident_info):
             connection.close()
             print("MySQL connection is closed")
 
+def sendData(accident_info):
+    # JSON 형식으로 변환
+    requestDtoJson = json.dumps(accident_info)
+
+    # 파일과 데이터를 멀티파트 폼 데이터로 전송
+    files = {
+        'image': ('accidnetImg.png', open(accident_info['imagePath'], 'rb'), 'image/png'),
+        'requestDto': (None, requestDtoJson, 'application/json')
+    }
+    # 자바 스프링 부트 서버의 URL (적절하게 수정 필요)
+    url = 'http://localhost:8080/api/accident/receiving-data'
+    # POST 요청 보내기
+    response = requests.post(url, files=files)
 
 # 비디오 처리
 def process_video(source, model, device, gps_info):
@@ -181,6 +197,7 @@ def process_video(source, model, device, gps_info):
                         }
                         insert_accident_data(accident_info)
                         results.append(accident_info)
+                        sendData(accident_info)
                     frame_skip = 1  # 사고가 발생하면 다음 프레임 검사
                 else:
                     frame_skip = 5  # 사고가 없으면 5 프레임 후 검사        
