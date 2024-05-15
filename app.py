@@ -179,9 +179,8 @@ def process_video(source, model, device, gps_info):
                             "sort" : 'NULL',
                             "serverity" : 'NULL'
                         }
+                        insert_accident_data(accident_info)
                         results.append(accident_info)
-                        for accident_info in results:
-                            insert_accident_data(accident_info)
                     frame_skip = 1  # 사고가 발생하면 다음 프레임 검사
                 else:
                     frame_skip = 5  # 사고가 없으면 5 프레임 후 검사        
