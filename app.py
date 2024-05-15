@@ -16,6 +16,8 @@ from datetime import datetime
 import base64
 import ffmpeg
 import re
+import mysql.connector
+from mysql.connector import Error
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24).hex()
@@ -93,6 +95,38 @@ def upload_file_or_link():
         return redirect(url_for('upload_file_or_link'))    
     return render_template('upload.html')
 
+# database에 데이터 추가
+def insert_accident_data(accident_info):
+    try:
+        # 데이터베이스 연결 설정
+        connection = mysql.connector.connect(
+            host='127.0.0.1',
+            database='capstone_ai',
+            user='ai_manager',
+            password='0000'
+        )
+        # 쿼리 실행을 위한 커서 생성
+        cursor = connection.cursor()
+        # SQL 쿼리 작성
+        insert_query = """
+        INSERT INTO accidents (image, accident, latitude, longitude, date, sort, severity)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        # 데이터 삽입 실행
+        cursor.execute(insert_query, (
+            accident_info['imagePath'], accident_info['accident'], accident_info['latitude'], 
+            accident_info['longitude'], accident_info['date'], accident_info['sort'], accident_info['severity']
+        ))
+        connection.commit()  # 변경사항 저장
+        print("Accident data inserted successfully.")
+    except Error as e:
+        print("Error while connecting to MySQL", e)
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+            print("MySQL connection is closed")
+
 
 # 비디오 처리
 def process_video(source, model, device, gps_info):
@@ -120,9 +154,8 @@ def process_video(source, model, device, gps_info):
             break
         
         if frame_count % frame_skip == 0:
-            #start_time = time.time()  # 프레임 처리 시작 시간
             input_tensor = transform(frame).unsqueeze(0).to(device)
-            with torch.no_grad():
+            with torch.no_grad(): 
                 output = model(input_tensor)
                 _, predicted = torch.max(output, 1)
                 #accident = 'No Accident' if predicted.item() == 1 else 'Accident'.
@@ -142,21 +175,19 @@ def process_video(source, model, device, gps_info):
                             "accident": accident,
                             "latitude": lat,
                             "longitude": lon,
-                            "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            "sort" : 'NULL',
+                            "serverity" : 'NULL'
                         }
                         results.append(accident_info)
+                        for accident_info in results:
+                            insert_accident_data(accident_info)
                     frame_skip = 1  # 사고가 발생하면 다음 프레임 검사
                 else:
-                    frame_skip = 5  # 사고가 없으면 5 프레임 후 검사
-
-            #end_time = time.time()  # 프레임 처리 종료 시간
-            #frame_times.append(end_time - start_time)  # 처리 시간을 목록에 추가
-        
+                    frame_skip = 5  # 사고가 없으면 5 프레임 후 검사        
         frame_count += 1
 
     cap.release()
-    #print("Average frame processing time: {:.4f} seconds".format(sum(frame_times) / len(frame_times)))
-    #print(results)  # 정상적으로 분석이 끝난 경우
     return results
 
 if __name__ == '__main__':
