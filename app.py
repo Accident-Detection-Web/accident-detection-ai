@@ -21,9 +21,25 @@ from mysql.connector import Error
 import requests
 import json
 from datetime import datetime
+import boto3
+from dotenv import load_dotenv
 
 app = Flask(__name__)
 CORS(app)
+
+# AWS 설정 
+S3_BUCKET = 'capstone-accident-img'
+S3_KEY = 'AKIA6ODU7LGDAOSEOHO4'
+S3_SECRET = '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'
+S3_REGION = 'ap-northeast-2'
+# S3 클라이언트 생성
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=S3_KEY,
+    aws_secret_access_key=S3_SECRET,
+    region_name=S3_REGION
+)
+
 app.config['SECRET_KEY'] = os.urandom(24).hex()
 app.config['UPLOAD_FOLDER'] = 'uploads/'
 app.config['ALLOWED_EXTENSIONS'] = {'mov', 'mp4', 'avi'}
@@ -81,7 +97,7 @@ def extract_gps_data(video_path):
     return 0, 0
 
 # database에 데이터 추가
-def insert_accident_data(accident_info):
+def insert_accident_data(imagePath, accident_info):
     try:
         # 데이터베이스 연결 설정
         connection = mysql.connector.connect(
@@ -99,7 +115,7 @@ def insert_accident_data(accident_info):
         """
         # 데이터 삽입 실행
         cursor.execute(insert_query, (
-            accident_info['imagePath'], accident_info['accident'], accident_info['latitude'], 
+            imagePath, accident_info['accident'], accident_info['latitude'], 
             accident_info['longitude'], accident_info['date'], accident_info['sort'], accident_info['severity']
         ))
         connection.commit()  # 변경사항 저장
@@ -112,20 +128,31 @@ def insert_accident_data(accident_info):
             connection.close()
             print("MySQL connection is closed")
 
-# def sendData(accident_info):
-#     # JSON 형식으로 변환
-#     requestDtoJson = json.dumps(accident_info)
+def sendData(imagePath, accident_info):
+    # 자바 스프링 부트 서버의 URL
+    url = 'http://3.38.60.73:8080/api/accident/receiving-data'    
+    # accident_info를 문자열로 변환
+    requestDtoStr = json.dumps(accident_info)    
+    # 이미지 URL에서 이미지 파일 다운로드
+    image_response = requests.get(imagePath)
+    if image_response.status_code != 200:
+        print("Failed to download image")
+        print(f"Status Code: {image_response.status_code}")
+        print(f"Response Text: {image_response.text}")
+        return
+    # 멀티파트 폼 데이터 준비
+    files = {
+        'image': ('accident.png', image_response.content, 'image/png'),
+        'requestDto': (None, requestDtoStr, 'application/json')
+    }    
+    # POST 요청 보내기
+    response = requests.post(url, files=files)    
+    if response.status_code == 200:
+        print("Data sent successfully")
+    else:
+        print(f"Failed to send data: {response.status_code}, {response.text}")
 
-#     # 파일과 데이터를 멀티파트 폼 데이터로 전송
-#     files = {
-#         'image': ('accidnetImg.png', open(accident_info['imagePath'], 'rb'), 'image/png'),
-#         'requestDto': (None, requestDtoJson, 'application/json')
-#     }
-#     # 자바 스프링 부트 서버의 URL (적절하게 수정 필요)
-#     url = 'http://localhost:8080/api/accident/receiving-data'
-#     # POST 요청 보내기
-#     response = requests.post(url, files=files)
-
+    
 def process_streaming_link(video_link, model, device, gps_info):
     cap = cv2.VideoCapture(video_link)
     transform = transforms.Compose([
@@ -195,7 +222,7 @@ def process_video(source, model, device, gps_info):
 
     frame_count = 0
     results = []
-    folder_path = 'C:\\Capston\\accident-detection-ai\\accident-detection-ai\\img'
+    #folder_path = 'C:\\Capston\\accident-detection-ai\\accident-detection-ai\\img'
     frame_times = []
     accident_count = 0
     frame_skip = 1  # 초기 frame_skip 값
@@ -213,26 +240,33 @@ def process_video(source, model, device, gps_info):
                 if accident == 1: # 사고발생하면
                     accident_count += 1
                     if(accident_count == 5):
-                        #이미지 저장
+                        # 이미지 인코딩
                         filename = f'accident_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
-                        full_path = os.path.join(folder_path, filename)
-                        cv2.imwrite(full_path, frame)
-                        # 이미지 경로, 사고여부, GPS, 위도, 경도 정보 추가
+                        _, img_encoded = cv2.imencode('.png', frame)
+                        img_bytes = img_encoded.tobytes()
+                        
+                        # S3에 업로드
+                        s3_client.put_object(
+                            Bucket=S3_BUCKET,
+                            Key=filename,
+                            Body=img_bytes,
+                            ContentType='image/png'
+                        )
+                                                
                         lat, lon = gps_info if gps_info != 'No GPS info available' else ('0', '0')
+                        imagePath = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
                         accident_info = {
-                            "imagePath": full_path,
-                            "accident": accident,
+                            "accident": True,
                             "latitude": lat,
                             "longitude": lon,
                             "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "sort" : 'NULL',
-                            "severity" : 'NULL'
+                            "sort" : "NULL",
+                            "severity" : "NULL"
                         }
-                        #db에 내용추가
-                        insert_accident_data(accident_info)
+                        insert_accident_data(imagePath, accident_info)
                         results.append(accident_info)
-                        #sendData(accident_info) #backend로 데이터전송
-                        return results # 영상은 백에 데이터 전송 후 바로 종료
+                        sendData(imagePath, accident_info)
+                        return results
                     frame_skip = 1  # 사고가 발생하면 다음 프레임 검사
                 else:
                     frame_skip = 5  # 사고가 없으면 5 프레임 후 검사        
