@@ -25,23 +25,28 @@ from datetime import datetime
 import boto3
 from dotenv import load_dotenv
 from tempfile import NamedTemporaryFile
+from ultralytics import YOLO
 
 app = Flask(__name__)
 CORS(app)
 
 # AWS 설정 
+# S3_IMG_BUCKET = 'capstone-accident-img'
+# S3_VIDEO_BUCKET = 'capstone-video'
+# S3_KEY = 'AKIA6ODU7LGDAOSEOHO4'
+# S3_SECRET = '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'
+# # S3 클라이언트 생성
+# s3_client = boto3.client(
+#     's3',
+#     aws_access_key_id=S3_KEY,
+#     aws_secret_access_key=S3_SECRET,
+#     region_name=S3_REGION
+# )
+s3_client = boto3.client('s3')
 S3_IMG_BUCKET = 'capstone-accident-img'
 S3_VIDEO_BUCKET = 'capstone-video'
-S3_KEY = 'AKIA6ODU7LGDAOSEOHO4'
-S3_SECRET = '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'
 S3_REGION = 'ap-northeast-2'
-# S3 클라이언트 생성
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=S3_KEY,
-    aws_secret_access_key=S3_SECRET,
-    region_name=S3_REGION
-)
+
 app.config['SECRET_KEY'] = os.urandom(24).hex()
 app.config['ALLOWED_EXTENSIONS'] = {'mov', 'mp4', 'avi'}
 
@@ -51,8 +56,9 @@ jwt = JWTManager(app)
 # 허용된 파일 확장자 검사
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
-# 모델 로드
-def load_model():
+
+# DenseNet모델 로드
+def load_densenet_model():
     device = torch.device("cpu")
     model = densenet121(weights=None)
     num_features = model.classifier.in_features
@@ -61,6 +67,17 @@ def load_model():
     model.to(device)
     model.eval()
     return model, device
+
+# YOLO 모델 로드 및 새로운 클래스 이름 설정
+def load_yolo_model_with_new_classes(model_path, class_names_path):
+    model = YOLO(model_path)
+    with open(class_names_path, "r") as f:
+        new_class_names = json.load(f)
+    model.model.names = new_class_names
+    print("새로운 클래스 이름:")
+    print(type(model.model.names), len(model.model.names))
+    print(model.model.names)
+    return model
 
 # AWS S3에서 파일을 메모리로 직접 로드
 def load_video_from_s3_to_tempfile(bucket, key):
@@ -131,7 +148,7 @@ def sendData(imagePath, accident_info):
         print(f"Failed to send data: {response.status_code}, {response.text}")
 
     
-def process_streaming_link(video_link, model, device, gps_info):
+def process_streaming_link(video_link, densenet_model, yolo_model, device, gps_info):
     cap = cv2.VideoCapture(video_link)
     transform = transforms.Compose([
         transforms.ToPILImage(), 
@@ -142,6 +159,7 @@ def process_streaming_link(video_link, model, device, gps_info):
     results = []
     accident_count = 0
     frame_skip = 1  # 초기 frame_skip 값
+    accident_detected = False  # 사고가 탐지되었는지 여부
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -150,12 +168,14 @@ def process_streaming_link(video_link, model, device, gps_info):
         if frame_count % frame_skip == 0:
             input_tensor = transform(frame).unsqueeze(0).to(device)
             with torch.no_grad(): 
-                output = model(input_tensor)
-                _, predicted = torch.max(output, 1)
+                output = densenet_model(input_tensor)
+                probabilities = torch.nn.functional.softmax(output, dim=1)
+                confidence, predicted = torch.max(probabilities, 1)
                 accident = 0 if predicted.item() == 1 else 1.
                 if accident == 1:
                     accident_count += 1
-                    if(accident_count == 5):
+                    if accident_count == 3 and not accident_detected:
+                        accident_detected = True
                         filename = f'accident_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
                         _, img_encoded = cv2.imencode('.png', frame)
                         img_bytes = img_encoded.tobytes()
@@ -167,6 +187,15 @@ def process_streaming_link(video_link, model, device, gps_info):
                             Body=img_bytes,
                             ContentType='image/png'
                         )
+                        # YOLO 모델로 프레임 분석
+                        results_yolo = yolo_model(frame)[0]
+                        yolo_class = "unknown"
+                        for result in results_yolo.boxes:
+                            cls = int(result.cls[0].item())
+                            if str(cls) in yolo_model.model.names:
+                                yolo_class = yolo_model.model.names[str(cls)]
+                                break
+                            
                         # 이미지 경로, 사고여부, GPS, 위도, 경도 정보 추가
                         lat, lon = gps_info if gps_info != None else ('0', '0')
                         imagePath = f"https://{S3_IMG_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
@@ -175,13 +204,18 @@ def process_streaming_link(video_link, model, device, gps_info):
                             "latitude": lat,
                             "longitude": lon,
                             "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "sort": "NULL",
-                            "severity": "NULL"
+                            "sort": yolo_class,
+                            "severity": f"{confidence.item():.2f}"
                         }
                         #db에 내용추가
                         insert_accident_data(imagePath, accident_info)
                         results.append(accident_info)
                         sendData(imagePath, accident_info)
+
+                        # 사고 탐지 후 5초 동안 대기
+                        time.sleep(5)
+                        accident_detected = False  # 사고 탐지 상태 초기화
+                        accident_count = 0  # 사고 카운트 초기화
                     frame_skip = 1  # 사고가 발생하면 다음 프레임 검사
                 else:
                     frame_skip = 5  # 사고가 없으면 5 프레임 후 검사        
@@ -189,7 +223,7 @@ def process_streaming_link(video_link, model, device, gps_info):
     cap.release()
     return results
 
-def process_video(bucket, key, model, device, gps_info):
+def process_video(bucket, key, densenet_model, yolo_model, device, gps_info):
     video_path = load_video_from_s3_to_tempfile(bucket, key)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -208,15 +242,16 @@ def process_video(bucket, key, model, device, gps_info):
     accident_count = 0
     frame_skip = 1
 
-    while cap.isOpened():
+    while cap.isOpened() and accident_count < 3:
         ret, frame = cap.read()
         if not ret:
             break
         if frame_count % frame_skip == 0:
             input_tensor = transform(frame).unsqueeze(0).to(device)
             with torch.no_grad():
-                output = model(input_tensor)
-                _, predicted = torch.max(output, 1)
+                output = densenet_model(input_tensor)
+                probabilities = torch.nn.functional.softmax(output, dim=1)
+                confidence, predicted = torch.max(probabilities, 1)
                 accident = 0 if predicted.item() == 1 else 1
                 if accident == 1:
                     accident_count += 1
@@ -232,15 +267,23 @@ def process_video(bucket, key, model, device, gps_info):
                             Body=img_bytes,
                             ContentType='image/png'
                         )
-                        lat, lon = gps_info if gps_info != None else ('0', '0')
+                        # YOLO 모델로 프레임 분석
+                        results_yolo = yolo_model(frame)[0]
+                        yolo_class = "unknown"
+                        for result in results_yolo.boxes:
+                            cls = int(result.cls[0].item())
+                            if str(cls) in yolo_model.model.names:
+                                yolo_class = yolo_model.model.names[str(cls)]
+                                break
+                        lat, lon = gps_info
                         imagePath = f"https://{S3_IMG_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
                         accident_info = {
                             "accident": True,
                             "latitude": lat,
                             "longitude": lon,
                             "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "sort": "NULL",
-                            "severity": "NULL"
+                            "sort": yolo_class,
+                            "severity": f"{confidence.item():.2f}"
                         }
                         insert_accident_data(imagePath, accident_info)
                         results.append(accident_info)
@@ -261,9 +304,10 @@ def upload_link():
         return jsonify({'error': 'No video link provided'}), 400
     video_link = request.json['video_link']
     try:
-        model, device = load_model()
+        densenet_model, device = load_densenet_model()
+        yolo_model = load_yolo_model_with_new_classes('YOLOv8_best.pt', 'class_names.json')
         gps_info = request.form.get('gps_info', '')
-        results = process_streaming_link(video_link, model, device, gps_info)
+        results = process_streaming_link(video_link, densenet_model, yolo_model, device, gps_info)
         return jsonify(results)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -289,20 +333,21 @@ def upload_video():
                 filename,
                 ExtraArgs={'ContentType': file.content_type}
             )
-            # 파일 URL 구성
-            file_url = f"https://{S3_VIDEO_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
-            # 모델 로딩 및 동영상 처리
-            model, device = load_model()
-            gps_info = request.form.get('gps_info', '')
-            results = process_video(S3_VIDEO_BUCKET, filename, model, device, gps_info)  # 동영상 처리 함수 호출
-            return jsonify(results)
         except Exception as e:
             return jsonify({'error': str(e)}), 500
+        # 파일 URL 구성
+        file_url = f"https://{S3_VIDEO_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
+        # 모델 로딩 및 동영상 처리
+        densenet_model, device = load_densenet_model()
+        yolo_model = load_yolo_model_with_new_classes('YOLOv8_best.pt', 'class_names.json')
+        #gps_info = request.form.get('gps_info', '')
+        gps_info = ('0', '0')
+        results = process_video(S3_VIDEO_BUCKET, filename, densenet_model, yolo_model, device, gps_info)  # 동영상 처리 함수 호출
+        return jsonify(results)    
     else:
         flash('File not allowed or missing')
         return redirect(request.url)
 
     
 if __name__ == '__main__':
-    model, device = load_model()
     app.run(debug=True)
