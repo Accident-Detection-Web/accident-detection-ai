@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torchvision.transforms as transforms
 from torchvision.models import densenet121
+from io import BytesIO
 import torch.nn as nn
 import time
 from datetime import datetime
@@ -23,12 +24,14 @@ import json
 from datetime import datetime
 import boto3
 from dotenv import load_dotenv
+from tempfile import NamedTemporaryFile
 
 app = Flask(__name__)
 CORS(app)
 
 # AWS 설정 
-S3_BUCKET = 'capstone-accident-img'
+S3_IMG_BUCKET = 'capstone-accident-img'
+S3_VIDEO_BUCKET = 'capstone-video'
 S3_KEY = 'AKIA6ODU7LGDAOSEOHO4'
 S3_SECRET = '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'
 S3_REGION = 'ap-northeast-2'
@@ -39,9 +42,7 @@ s3_client = boto3.client(
     aws_secret_access_key=S3_SECRET,
     region_name=S3_REGION
 )
-
 app.config['SECRET_KEY'] = os.urandom(24).hex()
-app.config['UPLOAD_FOLDER'] = 'uploads/'
 app.config['ALLOWED_EXTENSIONS'] = {'mov', 'mp4', 'avi'}
 
 # JWT 매니저 설정
@@ -50,7 +51,6 @@ jwt = JWTManager(app)
 # 허용된 파일 확장자 검사
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
-
 # 모델 로드
 def load_model():
     device = torch.device("cpu")
@@ -62,39 +62,17 @@ def load_model():
     model.eval()
     return model, device
 
-# 도분초 방식의 gps 좌표를 십진수 방식으로 변환
-def dms_to_decimal(dms):
-    # 정규 표현식을 사용하여 DMS 형식을 추출
-    match = re.match(r'(\d+) deg (\d+)\u0027 (\d+\.\d+)" ([NSEW])', dms)
-    if not match:
-        raise ValueError(f"Invalid DMS format: {dms}")    
-    degrees = float(match.group(1))
-    minutes = float(match.group(2))
-    seconds = float(match.group(3))
-    direction = match.group(4)    
-    decimal = degrees + (minutes / 60) + (seconds / 3600)
-    if direction in ['S', 'W']:
-        decimal *= -1    
-    return decimal
-# 동영상 파일에서 gps추출
-def extract_gps_data(video_path):
-    # GPS 정보 추출을 위한 ExifTool 명령어
-    command = ['exiftool', '-GPSLatitude', '-GPSLongitude', '-json', video_path]    
-    # subprocess.run을 사용하여 명령어 실행
-    result = subprocess.run(command, text=True, capture_output=True)    
-    # 결과 확인
-    if result.stdout:
-        # JSON 데이터를 파싱하여 GPS 정보를 추출
-        metadata = json.loads(result.stdout)
-        if metadata and 'GPSLatitude' in metadata[0] and 'GPSLongitude' in metadata[0]:
-            latitude_dms = metadata[0]['GPSLatitude']
-            longitude_dms = metadata[0]['GPSLongitude']
-            latitude = dms_to_decimal(latitude_dms)
-            longitude = dms_to_decimal(longitude_dms)
-            return latitude, longitude    
-    # GPS 정보가 없는 경우 0, 0 반환
-    print("No GPS data available in the video.")
-    return 0, 0
+# AWS S3에서 파일을 메모리로 직접 로드
+def load_video_from_s3_to_tempfile(bucket, key):
+    s3_client = boto3.client('s3')
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    file_stream = response['Body']
+    
+    # 임시 파일 생성 및 파일 스트림 쓰기
+    temp_file = NamedTemporaryFile(delete=False, suffix='.mp4')  # 삭제하지 않고, .mp4 확장자 사용
+    temp_file.write(file_stream.read())
+    temp_file.close()
+    return temp_file.name  # 파일 경로 반환
 
 # database에 데이터 추가
 def insert_accident_data(imagePath, accident_info):
@@ -159,13 +137,13 @@ def process_streaming_link(video_link, model, device, gps_info):
         transforms.ToPILImage(), 
         transforms.Resize((224, 224)), 
         transforms.ToTensor()])
+    
     frame_count = 0
     results = []
-    folder_path = 'C:\\Capston\\accident-detection-ai\\accident-detection-ai\\img'
-    frame_times = []
     accident_count = 0
     frame_skip = 1  # 초기 frame_skip 값
-    while cap.isOpened() and accident_count < 5:
+
+    while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break        
@@ -174,32 +152,36 @@ def process_streaming_link(video_link, model, device, gps_info):
             with torch.no_grad(): 
                 output = model(input_tensor)
                 _, predicted = torch.max(output, 1)
-                #accident = 'No Accident' if predicted.item() == 1 else 'Accident'.
                 accident = 0 if predicted.item() == 1 else 1.
-                #if accident == 'Accident':
                 if accident == 1:
                     accident_count += 1
                     if(accident_count == 5):
-                        #이미지 저장
                         filename = f'accident_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
-                        full_path = os.path.join(folder_path, filename)
-                        cv2.imwrite(full_path, frame)
+                        _, img_encoded = cv2.imencode('.png', frame)
+                        img_bytes = img_encoded.tobytes()
+
+                        s3_client = boto3.client('s3')
+                        s3_client.put_object(
+                            Bucket=S3_IMG_BUCKET,
+                            Key=filename,
+                            Body=img_bytes,
+                            ContentType='image/png'
+                        )
                         # 이미지 경로, 사고여부, GPS, 위도, 경도 정보 추가
-                        lat, lon = gps_info if gps_info != 'No GPS info available' else ('0', '0')
+                        lat, lon = gps_info if gps_info != None else ('0', '0')
+                        imagePath = f"https://{S3_IMG_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
                         accident_info = {
-                            "imagePath": full_path,
-                            "accident": accident,
+                            "accident": True,
                             "latitude": lat,
                             "longitude": lon,
                             "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "sort" : 'NULL',
-                            "serverity" : 'NULL'
+                            "sort": "NULL",
+                            "severity": "NULL"
                         }
                         #db에 내용추가
-                        insert_accident_data(accident_info)
+                        insert_accident_data(imagePath, accident_info)
                         results.append(accident_info)
-                        #backend로 데이터전송
-                        #sendData(accident_info)
+                        sendData(imagePath, accident_info)
                     frame_skip = 1  # 사고가 발생하면 다음 프레임 검사
                 else:
                     frame_skip = 5  # 사고가 없으면 5 프레임 후 검사        
@@ -207,10 +189,11 @@ def process_streaming_link(video_link, model, device, gps_info):
     cap.release()
     return results
 
-# 비디오 처리
-def process_video(source, model, device, gps_info):
-    cap = cv2.VideoCapture(source)
+def process_video(bucket, key, model, device, gps_info):
+    video_path = load_video_from_s3_to_tempfile(bucket, key)
+    cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
+        os.unlink(video_path)  # 임시 파일 삭제
         return ['Failed to open video source']
 
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -222,56 +205,53 @@ def process_video(source, model, device, gps_info):
 
     frame_count = 0
     results = []
-    #folder_path = 'C:\\Capston\\accident-detection-ai\\accident-detection-ai\\img'
-    frame_times = []
     accident_count = 0
-    frame_skip = 1  # 초기 frame_skip 값
+    frame_skip = 1
 
-    while cap.isOpened() and accident_count < 5:
+    while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
-            break        
+            break
         if frame_count % frame_skip == 0:
             input_tensor = transform(frame).unsqueeze(0).to(device)
-            with torch.no_grad(): 
+            with torch.no_grad():
                 output = model(input_tensor)
                 _, predicted = torch.max(output, 1)
-                accident = 0 if predicted.item() == 1 else 1.
-                if accident == 1: # 사고발생하면
+                accident = 0 if predicted.item() == 1 else 1
+                if accident == 1:
                     accident_count += 1
-                    if(accident_count == 5):
-                        # 이미지 인코딩
+                    if accident_count == 3:
                         filename = f'accident_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
                         _, img_encoded = cv2.imencode('.png', frame)
                         img_bytes = img_encoded.tobytes()
-                        
-                        # S3에 업로드
+
+                        s3_client = boto3.client('s3')
                         s3_client.put_object(
-                            Bucket=S3_BUCKET,
+                            Bucket=S3_IMG_BUCKET,
                             Key=filename,
                             Body=img_bytes,
                             ContentType='image/png'
                         )
-                                                
-                        lat, lon = gps_info if gps_info != 'No GPS info available' else ('0', '0')
-                        imagePath = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
+                        lat, lon = gps_info if gps_info != None else ('0', '0')
+                        imagePath = f"https://{S3_IMG_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
                         accident_info = {
                             "accident": True,
                             "latitude": lat,
                             "longitude": lon,
                             "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "sort" : "NULL",
-                            "severity" : "NULL"
+                            "sort": "NULL",
+                            "severity": "NULL"
                         }
                         insert_accident_data(imagePath, accident_info)
                         results.append(accident_info)
                         sendData(imagePath, accident_info)
+                        os.unlink(video_path)  # 임시 파일 삭제
                         return results
-                    frame_skip = 1  # 사고가 발생하면 다음 프레임 검사
                 else:
-                    frame_skip = 5  # 사고가 없으면 5 프레임 후 검사        
+                    frame_skip = 5
         frame_count += 1
     cap.release()
+    os.unlink(video_path)  # 임시 파일 삭제
     return results
 
 # 비디오 링크 업로드 라우트
@@ -284,7 +264,7 @@ def upload_link():
         model, device = load_model()
         gps_info = request.form.get('gps_info', '')
         results = process_streaming_link(video_link, model, device, gps_info)
-        return results
+        return jsonify(results)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     
@@ -300,15 +280,28 @@ def upload_video():
         return redirect(request.url)
     if file and allowed_file(file.filename):
         filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
-        model, device = load_model()
-        gps_info = extract_gps_data(file_path)
-        results = process_video(file_path, model, device, gps_info)
-        return results
+        # 파일을 로컬에 저장하는 대신 메모리에서 바로 S3에 업로드
+        try:
+            # 파일 내용을 읽어 S3에 저장
+            s3_client.upload_fileobj(
+                file,
+                S3_VIDEO_BUCKET,
+                filename,
+                ExtraArgs={'ContentType': file.content_type}
+            )
+            # 파일 URL 구성
+            file_url = f"https://{S3_VIDEO_BUCKET}.s3.{S3_REGION}.amazonaws.com/{filename}"
+            # 모델 로딩 및 동영상 처리
+            model, device = load_model()
+            gps_info = request.form.get('gps_info', '')
+            results = process_video(S3_VIDEO_BUCKET, filename, model, device, gps_info)  # 동영상 처리 함수 호출
+            return jsonify(results)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
     else:
         flash('File not allowed or missing')
         return redirect(request.url)
+
     
 if __name__ == '__main__':
     model, device = load_model()
