@@ -91,37 +91,37 @@ def load_video_from_s3_to_tempfile(bucket, key):
     temp_file.close()
     return temp_file.name  # 파일 경로 반환
 
-# database에 데이터 추가
-def insert_accident_data(imagePath, accident_info):
-    try:
-        # 데이터베이스 연결 설정
-        connection = mysql.connector.connect(
-            host='localhost',
-            database='ai_capstone',
-            user='root',
-            password='Abcd123@'
-        )
-        # 쿼리 실행을 위한 커서 생성
-        cursor = connection.cursor()
-        # SQL 쿼리 작성
-        insert_query = """
-        INSERT INTO accidents (image, accident, latitude, longitude, date, sort, severity)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """
-        # 데이터 삽입 실행
-        cursor.execute(insert_query, (
-            imagePath, accident_info['accident'], accident_info['latitude'], 
-            accident_info['longitude'], accident_info['date'], accident_info['sort'], accident_info['severity']
-        ))
-        connection.commit()  # 변경사항 저장
-        print("Accident data inserted successfully.")
-    except Error as e:
-        print("Error while connecting to MySQL", e)
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
-            print("MySQL connection is closed")
+# # database에 데이터 추가
+# def insert_accident_data(imagePath, accident_info):
+#     try:
+#         # 데이터베이스 연결 설정
+#         connection = mysql.connector.connect(
+#             host='localhost',
+#             database='ai_capstone',
+#             user='root',
+#             password='Abcd123@'
+#         )
+#         # 쿼리 실행을 위한 커서 생성
+#         cursor = connection.cursor()
+#         # SQL 쿼리 작성
+#         insert_query = """
+#         INSERT INTO accidents (image, accident, latitude, longitude, date, sort, severity)
+#         VALUES (%s, %s, %s, %s, %s, %s, %s)
+#         """
+#         # 데이터 삽입 실행
+#         cursor.execute(insert_query, (
+#             imagePath, accident_info['accident'], accident_info['latitude'], 
+#             accident_info['longitude'], accident_info['date'], accident_info['sort'], accident_info['severity']
+#         ))
+#         connection.commit()  # 변경사항 저장
+#         print("Accident data inserted successfully.")
+#     except Error as e:
+#         print("Error while connecting to MySQL", e)
+#     finally:
+#         if connection.is_connected():
+#             cursor.close()
+#             connection.close()
+#             print("MySQL connection is closed")
 
 def sendData(imagePath, accident_info):
     # 자바 스프링 부트 서버의 URL
@@ -208,7 +208,7 @@ def process_streaming_link(video_link, densenet_model, yolo_model, device, gps_i
                             "severity": f"{confidence.item():.2f}"
                         }
                         #db에 내용추가
-                        insert_accident_data(imagePath, accident_info)
+                        #insert_accident_data(imagePath, accident_info)
                         results.append(accident_info)
                         sendData(imagePath, accident_info)
 
@@ -285,7 +285,7 @@ def process_video(bucket, key, densenet_model, yolo_model, device, gps_info):
                             "sort": yolo_class,
                             "severity": f"{confidence.item():.2f}"
                         }
-                        insert_accident_data(imagePath, accident_info)
+                        #insert_accident_data(imagePath, accident_info)
                         results.append(accident_info)
                         sendData(imagePath, accident_info)
                         os.unlink(video_path)  # 임시 파일 삭제
