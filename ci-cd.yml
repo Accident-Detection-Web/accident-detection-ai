@@ -34,7 +34,7 @@ jobs:
       run: echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
     - name: Docker 이미지 빌드
-      run: docker build --f accident_detection
+      run: docker build . --file Dockerfile --tag accident_detection
       #run: docker build . --file Dockerfile --tag ${{ secrets.DOCKERHUB_USERNAME }}/accident_detection
 
     - name: Docker 이미지 푸시
