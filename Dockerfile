@@ -2,7 +2,10 @@
 FROM python:3.9-slim
 
 # 작업 디렉토리 설정
-WORKDIR /app
+WORKDIR /
+
+# requirements.txt 파일을 컨테이너로 복사
+COPY requirements.txt .
 
 # 필요 패키지 설치
 RUN pip install --no-cache-dir -r requirements.txt
