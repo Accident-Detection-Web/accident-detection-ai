@@ -34,11 +34,11 @@ jobs:
       run: echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
     - name: Docker 이미지 빌드
-      run: docker build . --file Dockerfile --tag accident_detection
+      run: docker build . --file Dockerfile --tag hoony990928/accident_detection
       #run: docker build . --file Dockerfile --tag ${{ secrets.DOCKERHUB_USERNAME }}/accident_detection
 
     - name: Docker 이미지 푸시
-      run: docker push accident_detection
+      run: docker push hoony990928/accident_detection
       #run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/accident_detection
 
     - name: AWS EC2에 배포
@@ -48,7 +48,7 @@ jobs:
         username: ${{ secrets.EC2_USER }}
         key: ${{ secrets.EC2_KEY }}
         script: |
-          docker pull accident_detection
+          docker pull hoony990928/accident_detection
           docker stop $(docker ps -a -q)
           docker rm $(docker ps -a -q)
-          docker run -d -p 5000:5000 accident_detection
+          docker run -d -p 5000:5000 hoony990928/accident_detection
