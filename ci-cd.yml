@@ -34,10 +34,10 @@ jobs:
       run: echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
     - name: Docker 이미지 빌드
-      run: docker build . --file Dockerfile --tag ${{ secrets.DOCKERHUB_USERNAME }}/accident_detection
+      run: docker build . --file Dockerfile --tag ${{ secrets.DOCKERHUB_USERNAME }}/detection
 
     - name: Docker 이미지 푸시
-      run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/accident_detection
+      run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/detection
 
     - name: AWS EC2에 배포
       uses: appleboy/ssh-action@master
@@ -46,7 +46,7 @@ jobs:
         username: ${{ secrets.EC2_USER }}
         key: ${{ secrets.EC2_KEY }}
         script: |
-          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/accident_detection
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/detection
           docker stop $(docker ps -a -q)
           docker rm $(docker ps -a -q)
-          docker run -d -p 5000:5000 ${{ secrets.DOCKERHUB_USERNAME }}/accident_detection
+          docker run -d -p 5000:5000 ${{ secrets.DOCKERHUB_USERNAME }}/detection
