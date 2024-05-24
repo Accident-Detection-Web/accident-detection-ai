@@ -123,7 +123,7 @@ def load_video_from_s3_to_tempfile(bucket, key):
 #             connection.close()
 #             print("MySQL connection is closed")
 
-def sendData(imagePath, accident_info):
+def sendData(imagePath, accident_info, header):
     # 자바 스프링 부트 서버의 URL
     url = 'http://3.38.60.73:8080/api/accident/receiving-data'    
     # accident_info를 문자열로 변환
@@ -139,16 +139,19 @@ def sendData(imagePath, accident_info):
     files = {
         'image': ('accident.png', image_response.content, 'image/png'),
         'requestDto': (None, requestDtoStr, 'application/json')
-    }    
+    }
+    # 헤더 정보를 문자열로 변환
+    headerStr = json.dumps(header)
+
     # POST 요청 보내기
-    response = requests.post(url, files=files)    
+    response = requests.post(url, files=files, headers={'Custom-Header': headerStr})    
     if response.status_code == 200:
         print("Data sent successfully")
     else:
         print(f"Failed to send data: {response.status_code}, {response.text}")
 
     
-def process_streaming_link(video_link, densenet_model, yolo_model, device, gps_info):
+def process_streaming_link(video_link, densenet_model, yolo_model, device, gps_info, header):
     cap = cv2.VideoCapture(video_link)
     transform = transforms.Compose([
         transforms.ToPILImage(), 
@@ -210,7 +213,7 @@ def process_streaming_link(video_link, densenet_model, yolo_model, device, gps_i
                         #db에 내용추가
                         #insert_accident_data(imagePath, accident_info)
                         results.append(accident_info)
-                        sendData(imagePath, accident_info)
+                        sendData(imagePath, accident_info, header)
 
                         # 사고 탐지 후 5초 동안 대기
                         time.sleep(5)
@@ -223,7 +226,7 @@ def process_streaming_link(video_link, densenet_model, yolo_model, device, gps_i
     cap.release()
     return results
 
-def process_video(bucket, key, densenet_model, yolo_model, device, gps_info):
+def process_video(bucket, key, densenet_model, yolo_model, device, gps_info, header):
     video_path = load_video_from_s3_to_tempfile(bucket, key)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -287,7 +290,7 @@ def process_video(bucket, key, densenet_model, yolo_model, device, gps_info):
                         }
                         #insert_accident_data(imagePath, accident_info)
                         results.append(accident_info)
-                        sendData(imagePath, accident_info)
+                        sendData(imagePath, accident_info, header)
                         os.unlink(video_path)  # 임시 파일 삭제
                         return results
                 else:
@@ -302,16 +305,29 @@ def process_video(bucket, key, densenet_model, yolo_model, device, gps_info):
 def upload_link():
     if 'video_link' not in request.json:
         return jsonify({'error': 'No video link provided'}), 400
+
     video_link = request.json['video_link']
+    gps_info = request.json.get('gps_info', '')
+
+    # 헤더에서 토큰 정보 받기
+    token = request.headers.get('Authorization')
+    refresh_token = request.headers.get('Refresh')
+
+    if not token or not refresh_token:
+        return jsonify({'error': 'Authorization headers missing'}), 401
+
     try:
         densenet_model, device = load_densenet_model()
         yolo_model = load_yolo_model_with_new_classes('YOLOv8_best.pt', 'class_names.json')
-        gps_info = request.form.get('gps_info', '')
-        results = process_streaming_link(video_link, densenet_model, yolo_model, device, gps_info)
+        header = {
+            'token': token,
+            'refresh_token': refresh_token
+        }
+        results = process_streaming_link(video_link, densenet_model, yolo_model, device, gps_info, header)
         return jsonify(results)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-    
+     
 # 비디오 파일 업로드 라우트
 @app.route('/api/v1/public/upload-video', methods=['GET', 'POST'])
 def upload_video():
@@ -324,6 +340,17 @@ def upload_video():
         return redirect(request.url)
     if file and allowed_file(file.filename):
         filename = secure_filename(file.filename)
+
+        # 헤더에서 토큰 정보 받기
+        token = request.headers.get('Authorization')
+        refresh_token = request.headers.get('Refresh')
+
+        if not token or not refresh_token:
+            return jsonify({'error': 'Authorization headers missing'}), 401
+
+        # GPS 정보 받기
+        gps_info = request.form.get('gps_info', '')
+
         # 파일을 로컬에 저장하는 대신 메모리에서 바로 S3에 업로드
         try:
             # 파일 내용을 읽어 S3에 저장
@@ -340,9 +367,11 @@ def upload_video():
         # 모델 로딩 및 동영상 처리
         densenet_model, device = load_densenet_model()
         yolo_model = load_yolo_model_with_new_classes('YOLOv8_best.pt', 'class_names.json')
-        #gps_info = request.form.get('gps_info', '')
-        gps_info = ('0', '0')
-        results = process_video(S3_VIDEO_BUCKET, filename, densenet_model, yolo_model, device, gps_info)  # 동영상 처리 함수 호출
+        header = {
+            'token': token,
+            'refresh_token': refresh_token
+        }
+        results = process_video(S3_VIDEO_BUCKET, filename, densenet_model, yolo_model, device, gps_info, header)  # 동영상 처리 함수 호출
         return jsonify(results)    
     else:
         flash('File not allowed or missing')
@@ -352,35 +381,3 @@ def upload_video():
 if __name__ == '__main__':
     app.run(debug=True)
 
-
-# DOCKERHUB_USERNAME:qkrckdgns99@gmail.com
-# DOCKERHUB_PASSWORD:hh22125513!
-# EC2_HOST:ec2-3-35-233-44.ap-northeast-2.compute.amazonaws.com
-# EC2_USER:ec2-user
-# EC2_KEY:-----BEGIN RSA PRIVATE KEY-----
-# MIIEpAIBAAKCAQEAt72Z1lDvpeO7sHvU4g5q0Ox1eTwFvrC0+7WLZsXCmF0Oacfu
-# GyHQflgqMjxyzQCnMfXsgGkMrk8Jg+zSAIDCHW2OGnukDcJ3NwN3SBtJ8UN299xG
-# TLevn/LW5jprH9VW/twxqXEgxLmnrNxY7MVST52F1QZaTDCG7XazERV1dJdKM2if
-# Ruqx1G+ONBY8UqUc1FNWojr8ZRJvKo0kPPp4ZA+6Gt2hrJs8dezTbR4MsQM2TCpW
-# s8I/BkdLlPYC5WaCAyxuDydkzSPdsjJWXaeWSw1wY1QIvBLspWNaxcW8FJArJLQF
-# MK2rfsTx23+n5V5Tg2Q+9hBorYA2uahiy6GDDQIDAQABAoIBAQCtpRHt6S+Sp1aJ
-# w3285cMtD0s19/O182oXN8s2pU7yj38/mSL9oUdZIBlAwL/93dAk9zU7ZgwF78we
-# UYFl2EmbZh4WCSNRnabs5umjy6ZlzExykkod1rqzftx5WFxFCWneElsctz0wrgQ4
-# 6UVg/lp7w3Lnj8lml7XsVXGFg7ItK/L1kxn9xhvYACC5YzfLvnjTRG7nKZV85bZ4
-# NqHM8of7kRmNK4YcC6JYvYuz2aVzfecDYNlUktpg3bxs1IofcJspqbP1MZKSeXhF
-# octFB0zydw4WEXC39gjxN3ZlasfQUEn4S5ubf+6v7MHqiCILcHXWDk+KmefjjS6A
-# /Ij2SiBBAoGBAOUmExvHNSMWQJQnDUG/eZOMg894aI+jgp7mwqniAk+VL8k7nWS7
-# wpE+mGFvArQi4aZ4RNkavFeLkPN98TW6RCZOHhQYpwZK4lHkx075FGMrcvjrDZ+R
-# lt8HO9UunJ5qB/G8trkLiRMsMGoppUsjda4293kIaYoCspgtuxQHDFs7AoGBAM1F
-# Y7voEPq+3IoMfV4b6CDIlR+vC2EGGF0i3mid8ahzxbst7Y769RzQbX3CKxz7PIAm
-# IhT0CZyq9KcCP8NdSN6sgTvghcKNDVKq2uv8Vs/zNjUErUkNfZINQXsFqeNKijta
-# zlO4kkRmkjUycJBkc+qDO1lNLLZWMstCikQK72ZXAoGAe2QHQhwA9wXSfHSS5OaQ
-# Nu2hRKTX2RD5E0u7YvM6v1PcSYX6ePXKDaAhOcYnNIzb6WI14JpO9O1IfnVA3+eP
-# Lvk9pSCpP/Au8l45HMNvQP9yh6s6yMQC89HXXDIfUAZUhM1Tr00Q4OwYnfIS+eT8
-# R3V9yQTIn/JX7S4i4OPyuWUCgYEAop4ZL9DeOrcfoiHY48g58lbVhL84xYl9nbM0
-# /S47NxdYizwMWdxIeKZKR3mejBwgxuju0SivwLTSksg+WXg6dWW2EAiEDyeNaXM/
-# cfp7j8x+oivtV9VfKGhl+p73AsCXmAQNNtge0B9uLsSh1lIuXpfOWaXBCUZqgQpa
-# 3SLIm4sCgYA9dGf4GIdzAm8Ryzu4DewKy6LUszFOhvIjcFt1JEhg7B+jo5PI7ljr
-# 7KKc7FIPwjcv+eSUSz4NLGe7RVxPYFJAJtokOZAhffOEvSEjDgD7U51NTZsZsE0H
-# QzVIQY/EOHKZnjMp3TeHom/LXr7vrtoJrG93+gXx0AjTYzmv6dVVjQ==
-# -----END RSA PRIVATE KEY-----
